@@ -1,0 +1,32 @@
+llm:
+  base_url: "http://localhost:11434"  # Ollama server URL
+  model: "llama2"  # or any other model you have pulled in Ollama
+  max_tokens: 2000
+  temperature: 0.9
+
+database:
+  url: "postgresql://testuser:testpass@localhost:5432/yes" # Or use DATABASE_URL env var
+  table_name: "documents"
+  vector_dim: 768
+  batch_size: 100
+
+scraper:
+  max_depth: 3
+  rate_limit: 2.0
+  ignore_patterns:
+    - "/ignore/"
+    - "private"
+  allowed_extensions:
+    - ".html"
+    - ".htm"
+    - "/"
+    - ""
+
+processor:
+  chunk_size: 1000
+  chunk_overlap: 200
+  remove_stopwords: true
+
+ui:
+  streaming: yes
+  theme: "default" 
