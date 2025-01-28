@@ -17,7 +17,7 @@ This example demonstrates how to use pgvector, a PostgreSQL extension for vector
 
 4. **Adds Sample Documents:**
    - Inserts several documents (cities) with metadata into the vector store.
-   - Each document includes the city name, population, and area.
+   - Documents are scraped from site urls.
 
 5. **Performs Similarity Searches:**
    - Demonstrates various types of similarity searches:
