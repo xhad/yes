@@ -15,15 +15,12 @@ This example demonstrates how to use pgvector, a PostgreSQL extension for vector
    - Establishes a connection to the PostgreSQL database.
    - Initializes a vector store using pgvector and Ollama embeddings.
 
-4. **Adds Sample Documents:**
-   - Inserts several documents (cities) with metadata into the vector store.
+4. **Scrape URL for Documents:**
+   - Inserts scraped documents with metadata into the vector store.
    - Documents are scraped from site urls.
 
 5. **Performs Similarity Searches:**
-   - Demonstrates various types of similarity searches:
-     a. Basic search for documents similar to "japan".
-     b. Search for South American cities with a score threshold.
-     c. Search with both score threshold and metadata filtering.
+   - Demonstrates various types of similarity searches
 
 ## Key Features
 
