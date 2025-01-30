@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -124,18 +125,7 @@ func getSpinner(description string) *progressbar.ProgressBar {
 
 func run(config Config) error {
 	// Initialize components
-	var processedCount int32
-	scraper, err := scraper.NewWithConfig(scraper.ScraperConfig{
-		BaseURL:   config.DocsURL,
-		MaxDepth:  config.MaxDepth,
-		RateLimit: config.RateLimit,
-		OnProgress: func(url string) {
-			atomic.AddInt32(&processedCount, 1)
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("failed to initialize scraper: %v", err)
-	}
+
 	chatEngine, err := llm.NewWithConfig(llm.ChatConfig{
 		Model:       config.Model,
 		MaxTokens:   config.MaxTokens,
@@ -165,91 +155,8 @@ func run(config Config) error {
 
 	defer vectorStore.Close()
 
-	// If docs URL is provided, scrape and store documents
-	if config.DocsURL != "" {
-		color.Blue("\nStarting documentation pipeline for %s\n", config.DocsURL)
-
-		// Create progress bar for scraping
-		scrapingBar := getProgressBar(-1, "📄 Scraping documentation...")
-
-		// Start progress updater with ETA calculation
-		startTime := time.Now()
-		lastCount := int32(0)
-
-		go func() {
-			for {
-				count := atomic.LoadInt32(&processedCount)
-				scrapingBar.Set(int(count))
-
-				// Calculate and show rate
-				if count > lastCount {
-					elapsed := time.Since(startTime).Seconds()
-					rate := float64(count) / elapsed
-					scrapingBar.Describe(color.BlueString(
-						"📄 Scraping documentation... (%.1f pages/sec)", rate))
-				}
-				lastCount = count
-				time.Sleep(100 * time.Millisecond)
-			}
-		}()
-
-		docs, err := scraper.Scrape(config.DocsURL)
-		if err != nil {
-			return fmt.Errorf("failed to scrape documents: %v", err)
-		}
-		scrapingBar.Finish()
-		color.Green("\n✓ Scraped %d documents\n", len(docs))
-
-		// Processing progress bar
-		processingBar := getProgressBar(len(docs), "🔄 Processing documents...")
-		processed := make([]models.ProcessedDocument, 0, len(docs))
-
-		startTime = time.Now()
-		for i, doc := range docs {
-			processedDocs, err := processor.Process([]models.Document{doc})
-			if err != nil {
-				return fmt.Errorf("failed to process document %s: %v", doc.URL, err)
-			}
-			processed = append(processed, processedDocs...)
-			processingBar.Add(1)
-
-			// Update rate
-			elapsed := time.Since(startTime).Seconds()
-			rate := float64(i+1) / elapsed
-			processingBar.Describe(color.BlueString(
-				"🔄 Processing documents... (%.1f docs/sec)", rate))
-		}
-		color.Green("\n✓ Processed into %d chunks\n", len(processed))
-
-		// Storage progress bar
-		storageBar := getProgressBar(len(processed), "💾 Storing in vector database...")
-
-		// Store in batches with rate display
-		startTime = time.Now()
-		batchSize := config.BatchSize
-		for i := 0; i < len(processed); i += batchSize {
-			end := i + batchSize
-			if end > len(processed) {
-				end = len(processed)
-			}
-			batch := processed[i:end]
-
-			if err := vectorStore.Store(batch); err != nil {
-				return fmt.Errorf("failed to store batch: %v", err)
-			}
-			storageBar.Add(len(batch))
-
-			// Update rate
-			elapsed := time.Since(startTime).Seconds()
-			rate := float64(i+len(batch)) / elapsed
-			storageBar.Describe(color.BlueString(
-				"💾 Storing in vector database... (%.1f chunks/sec)", rate))
-		}
-		color.Green("\n✓ Storage complete\n")
-	}
-
 	// Interactive chat loop with colored output
-	color.Cyan("\nChat with your knowledge base (type 'exit' to quit)")
+	color.Cyan("\nChat with Loreum Sensors and Agents (type 'exit' to quit)")
 
 	scanner := bufio.NewScanner(os.Stdin)
 	userPrompt := color.New(color.FgGreen).PrintfFunc()
@@ -266,24 +173,147 @@ func run(config Config) error {
 			break
 		}
 
+		// Check if input contains a URL
+		urlRegex := regexp.MustCompile(`https?://[^\s]+`)
+		if url := urlRegex.FindString(query); url != "" {
+			color.Blue("\nDetected URL: %s", url)
+			if !strings.HasPrefix(url, "http") {
+				url = "https://" + url
+			}
+
+			// Initialize scraper for this URL
+			var scrapeCount int32
+			s, err := scraper.NewWithConfig(scraper.ScraperConfig{
+				BaseURL:   url,
+				MaxDepth:  config.MaxDepth,
+				RateLimit: config.RateLimit,
+				OnProgress: func(url string) {
+					atomic.AddInt32(&scrapeCount, 1)
+				},
+			})
+			if err != nil {
+				color.Red("Failed to initialize scraper: %v\n", err)
+				continue
+			}
+
+			// Create progress bar for scraping
+			scrapingBar := getProgressBar(-1, " Scraping documentation...")
+			startTime := time.Now()
+			lastCount := int32(0)
+
+			// Start progress updater
+			go func() {
+				for {
+					count := atomic.LoadInt32(&scrapeCount)
+					scrapingBar.Set(int(count))
+
+					if count > lastCount {
+						elapsed := time.Since(startTime).Seconds()
+						rate := float64(count) / elapsed
+						scrapingBar.Describe(color.BlueString(
+							"Scraping documentation (%.1f pages/sec)", rate))
+					}
+					lastCount = count
+					time.Sleep(100 * time.Millisecond)
+				}
+			}()
+
+			// Scrape the URL
+			docs, err := s.Scrape(url)
+			if err != nil {
+				scrapingBar.Finish()
+				color.Red("Failed to scrape URL: %v\n", err)
+				continue
+			}
+			scrapingBar.Finish()
+			color.Green("✓ Scraped %d documents\n", len(docs))
+
+			// Process documents with progress bar
+			processed := make([]models.ProcessedDocument, 0)
+			var processedCount int32
+			processingBar := getProgressBar(-1, " Processing documents")
+
+			// Initialize variables for progress tracking
+			startTime1 := time.Now()
+			lastCount1 := int32(0)
+
+			// Start the progress updater goroutine
+			go func() {
+				for {
+					count := atomic.LoadInt32(&processedCount)
+					processingBar.Set(int(count))
+					if count > lastCount1 {
+						elapsed := time.Since(startTime1).Seconds()
+						rate := float64(count) / elapsed
+						processingBar.Describe(color.BlueString(
+							"Processing documents (%.1f docs/sec)", rate))
+					}
+					lastCount1 = count
+					time.Sleep(100 * time.Millisecond)
+				}
+			}()
+
+			for _, doc := range docs {
+				processedDocs, err := processor.Process([]models.Document{doc})
+				if err != nil {
+					color.Red("Failed to process document %s: %v\n", doc.URL, err)
+					continue
+				}
+
+				// Update the count when processing is successful
+				atomic.AddInt32(&processedCount, 1)
+				processed = append(processed, processedDocs...)
+			}
+			processingBar.Finish()
+			color.Green("✓ Processed into %d chunks\n", len(processed))
+
+			// Store in vector database
+			storageBar := getProgressBar(-1, " Storing in vector database")
+			startTime = time.Now()
+			batchSize := config.BatchSize
+
+			for i := 0; i < len(processed); i += batchSize {
+				end := i + batchSize
+				if end > len(processed) {
+					end = len(processed)
+				}
+				batch := processed[i:end]
+
+				if err := vectorStore.Store(batch); err != nil {
+					color.Red("Failed to store batch: %v\n", err)
+					continue
+				}
+				storageBar.Add(len(batch))
+
+				elapsed := time.Since(startTime).Seconds()
+				rate := float64(i+len(batch)) / elapsed
+				storageBar.Describe(color.BlueString(
+					"Storing in vector database (%.1f chunks/sec)", rate))
+			}
+			storageBar.Finish()
+			color.Green("✓ URL processed and stored\n")
+
+			if strings.TrimSpace(query) == url {
+				continue
+			}
+		}
+
+		// Regular chat flow continues here...
 		emb := llm.NewEmbedder()
 		queryArray := make([]string, 1)
 		queryArray[0] = query
 
 		embeddings, err := emb.Embed.CreateEmbedding(context.Background(), queryArray)
-
 		if err != nil {
-			fmt.Errorf("failed to create query embeddgins %s", err)
+			color.Red("Failed to create query embeddings: %v\n", err)
+			continue
 		}
 
 		flatEmbeddings := emb.FlattenEmbeddings(embeddings)
 
 		// Show spinner while querying
-		querySpinner := getSpinner("🔍 Searching documentation...")
-
+		querySpinner := getSpinner(" Searching documentation...")
 		docs, err := vectorStore.Query(flatEmbeddings, 5)
-		fmt.Print("\r") // Clear spinner line
-
 		querySpinner.Finish()
 
 		if err != nil {
@@ -292,37 +322,53 @@ func run(config Config) error {
 		}
 
 		if config.Streaming {
-
 			stream, err := chatEngine.ChatStream(query, docs)
-
-			responseSpinner := getSpinner("🤖 Generating response...")
+			if err != nil {
+				color.Red("Error: %v\n", err)
+				continue
+			}
 
 			fmt.Print("\n")
 			assistantPrompt("Assistant: ")
 
-			if err != nil {
-				color.Red("Error: %v\n", err)
-				responseSpinner.Finish()
-				continue
-			}
+			// Create and start the spinner
+			responseSpinner := getSpinner(" Thinking...")
+			firstChunk := true
 
+			// Process the stream
 			for chunk := range stream {
-				assistantPrompt("Assistant: %s", chunk)
+				if strings.HasPrefix(chunk, "Error:") {
+					responseSpinner.Finish()
+					color.Red("\n%s", chunk)
+					break
+				}
+
+				// Clear spinner on first chunk
+				if firstChunk {
+					responseSpinner.Finish()
+					firstChunk = false
+					fmt.Println("\n")
+
+				}
+
+				fmt.Print(chunk)
 			}
 
-			responseSpinner.Finish()
+			// Ensure spinner is finished in case of early exit
+			if firstChunk {
+				responseSpinner.Finish()
+			}
 			fmt.Print("\n")
 		} else {
-			responseSpinner := getSpinner("🤖 Generating response...")
+			responseSpinner := getSpinner(" Generating response...")
 			response, err := chatEngine.Chat(query, docs)
 			responseSpinner.Finish()
-			fmt.Print("\r")
 
 			if err != nil {
 				color.Red("Error: %v\n", err)
 				continue
 			}
-			assistantPrompt("Assistant: %s\n", response)
+			assistantPrompt("\nAssistant: %s\n", response)
 		}
 	}
 

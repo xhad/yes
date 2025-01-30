@@ -97,8 +97,8 @@ func (ce *ChatEngine) ChatStream(query string, docs []models.Document) (<-chan s
 
 	content := []llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, ce.config.SystemTemplate),
+		llms.TextParts(llms.ChatMessageTypeSystem, contextBuilder.String()),
 		llms.TextParts(llms.ChatMessageTypeHuman, query),
-		llms.TextParts(llms.ChatMessageTypeHuman, contextBuilder.String()),
 	}
 
 	resultChan := make(chan string)
@@ -107,21 +107,20 @@ func (ce *ChatEngine) ChatStream(query string, docs []models.Document) (<-chan s
 		defer close(resultChan)
 
 		ctx := context.Background()
-		stream, err := ce.llm.GenerateContent(ctx, content)
+		_, err := ce.llm.GenerateContent(ctx, content, llms.WithStreamingFunc(
+			func(_ context.Context, chunk []byte) error {
+				select {
+				case resultChan <- string(chunk):
+					return nil
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			},
+		))
+
 		if err != nil {
 			resultChan <- fmt.Sprintf("Error: %v", err)
 			return
-		}
-
-		if stream == nil {
-			resultChan <- "Error: No response from LLM"
-			return
-		}
-
-		for _, choice := range stream.Choices {
-			if choice != nil && choice.Content != "" {
-				resultChan <- choice.Content
-			}
 		}
 	}()
 

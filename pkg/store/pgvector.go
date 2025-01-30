@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"unicode/utf8"
+
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pgvector/pgvector-go"
 	"github.com/xhad/yes/internal/models"
@@ -126,11 +128,14 @@ func (vs *VectorStore) Store(docs []models.ProcessedDocument) error {
 	// Insert documents in batches
 	for _, doc := range docs {
 
+		cleanTitle := sanitizeUTF8(doc.Title)
+
 		for i, chunk := range doc.Chunks {
+			cleanChunk := sanitizeUTF8(chunk)
 			id := fmt.Sprintf("%s_%d", doc.ID, i)
 
 			reChunk := make([]string, 1)
-			reChunk[0] = chunk // Replace 'chunk1' with your first chunk data
+			reChunk[0] = cleanChunk // Replace 'chunk1' with your first chunk data
 
 			embedding, err := emb.Embed.CreateEmbedding(ctx, reChunk)
 
@@ -138,9 +143,8 @@ func (vs *VectorStore) Store(docs []models.ProcessedDocument) error {
 				return fmt.Errorf("failed to create embeddings: %v", err)
 			}
 
-			var vectorSlice []float32 // falttend embeddings
+			var vectorSlice []float32
 
-			// Flatten the embeddings into a single slice
 			// Flatten the embeddings into a single slice using a temporary buffer
 			var tempBuffer []float32
 			for _, emb := range embedding {
@@ -153,8 +157,8 @@ func (vs *VectorStore) Store(docs []models.ProcessedDocument) error {
 			_, err = tx.Exec(ctx, stmt,
 				id,
 				doc.URL,
-				doc.Title,
-				chunk,
+				cleanTitle,
+				cleanChunk,
 				i,
 				vectorEmbeddings,
 				doc.Metadata,
@@ -218,4 +222,22 @@ func (vs *VectorStore) Close() {
 	if vs.pool != nil {
 		vs.pool.Close()
 	}
+}
+
+// Add this helper function
+func sanitizeUTF8(s string) string {
+	if !utf8.ValidString(s) {
+		v := make([]rune, 0, len(s))
+		for i, r := range s {
+			if r == utf8.RuneError {
+				_, size := utf8.DecodeRuneInString(s[i:])
+				if size == 1 {
+					continue
+				}
+			}
+			v = append(v, r)
+		}
+		return string(v)
+	}
+	return s
 }
